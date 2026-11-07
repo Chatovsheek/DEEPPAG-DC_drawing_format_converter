@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DEEP конвертер чертежей</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%2316213e'/%3E%3Cpath d='M14 24h30l-8-8M50 40H20l8 8' stroke='%23e94560' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Segoe UI,Arial,sans-serif;background:#0d0d1a;color:#e8e8f0;min-height:100vh;display:flex;justify-content:center;padding:24px}
+.app{width:100%;max-width:760px}
+h1{font-size:22px;margin-bottom:4px}.sub{color:#9aa8bb;margin-bottom:18px;font-size:14px}
+#drop{border:2px dashed #4a6a8b;border-radius:14px;padding:36px 16px;text-align:center;cursor:pointer;background:#16213e}
+#drop.over{border-color:#e94560;background:#1d2a50}
+#drop b{display:block;font-size:17px;margin-bottom:6px}#drop span{color:#9aa8bb;font-size:13px}
+.card{background:#16213e;border-radius:12px;padding:16px;margin-top:16px}
+.row{display:flex;gap:12px;align-items:center;margin:8px 0;flex-wrap:wrap}
+label.l{font-size:13px;color:#b8c4d8;min-width:140px}
+select{background:#0f3460;color:#fff;border:1px solid #4a6a8b;border-radius:6px;padding:6px 8px;font-size:14px}
+button{background:#e94560;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:16px;cursor:pointer;width:100%;margin-top:12px}
+button:disabled{opacity:.4;cursor:not-allowed}
+.fmts{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
+.fmts label{display:flex;align-items:center;gap:6px;background:#0f3460;border:1px solid #4a6a8b;border-radius:8px;padding:8px 14px;cursor:pointer;color:#fff;font-size:14px}
+.fmts label.dis{opacity:.35;cursor:not-allowed}
+#info{font-size:14px;line-height:1.5}
+.w{color:#f0c040;font-size:13px;margin-top:6px}.e{color:#ff7a8a;font-size:14px;margin-top:10px}.ok{color:#7fe08a;font-size:14px;margin-top:10px}
+canvas#pv{background:#fff;border-radius:8px;max-width:100%;margin-top:10px}
+</style></head><body>
+<div class="app">
+<h1>🔄 DEEP конвертер чертежей</h1>
+<div class="sub">DXF · SVG · PDF · PNG · JSON эскизника. Файлы остаются на вашем компьютере, интернет не нужен.</div>
+<div id="drop"><b>Перетащите файл сюда</b><span>или нажмите, чтобы выбрать, или вставьте из буфера (Ctrl+V)</span></div>
+<input type="file" id="fi" hidden accept=".dxf,.svg,.json,.png,.jpg,.jpeg,.pdf">
+<div id="msg"></div>
+<div class="card" id="c2" hidden>
+<div id="info"></div><div id="warns"></div><canvas id="pv"></canvas>
+<div class="row"><label class="l">Во что конвертировать:</label></div><div class="fmts" id="fmts"></div>
+<div class="row"><label class="l">Качество:</label><select id="q"><option value="1500">Черновик</option><option value="3000" selected>Обычное</option><option value="6000">Высокое</option></select></div>
+<div class="row"><label class="l">Цвет линий:</label><select id="mono"><option value="1" selected>Чёрные на белом (для печати)</option><option value="0">Как в файле</option></select></div>
+<div class="row"><label class="l">Страница PDF:</label><select id="pg"><option>A4</option><option>A3</option></select></div>
+<button id="go">Конвертировать и скачать</button><div id="res"></div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id),D2R=Math.PI/180,TAU=2*Math.PI;
+const FM=['DXF','SVG','PDF','PNG','JSON'],KN={dxf:'DXF',svg:'SVG',json:'JSON эскизника',raster:'изображение',pdf:'PDF'};
+const DASH={dashed:[8,6],dashdot:[10,4,2,4],dotted:[2,4]};
+let SRC=null,ENTS=null;
+const mul=(A,B)=>[A[0]*B[0]+A[2]*B[1],A[1]*B[0]+A[3]*B[1],A[0]*B[2]+A[2]*B[3],A[1]*B[2]+A[3]*B[3],A[0]*B[4]+A[2]*B[5]+A[4],A[1]*B[4]+A[3]*B[5]+A[5]];
+const cc=document.createElement('canvas').getContext('2d');
+function hex(c){if(!c||c==='none')return null;cc.fillStyle='#000000';cc.fillStyle=c;const v=cc.fillStyle;return v[0]==='#'?v:null;}
+const dashOf=n=>/DASHDOT|CENTER|PHANTOM/i.test(n)?'dashdot':/DASH|HIDDEN/i.test(n)?'dashed':/DOT/i.test(n)?'dotted':'solid';
+// ---------- цвета DXF ----------
+const ACI=['#000000','#ff0000','#ffff00','#00ff00','#00ffff','#0000ff','#ff00ff','#ffffff','#808080','#c0c0c0'],GR=['#333333','#505050','#696969','#828282','#bebebe','#ffffff'];
+function hsv(h,s,v){const f=k=>{const x=(k+h/60)%6;return v-v*s*Math.max(0,Math.min(x,4-x,1));},t=c=>Math.round(c*255).toString(16).padStart(2,'0');return'#'+t(f(5))+t(f(3))+t(f(1));}
+function aci(n){n=Math.abs(n);if(n<10)return ACI[n];if(n>=250)return GR[n-250]||'#ffffff';if(n>255)return'#ffffff';const v=(n-10)%10;return hsv(Math.floor((n-10)/10)*15,v%2?.5:1,[1,.65,.5,.3,.15][v>>1]);}
+function nearAci(c){const r=parseInt(c.substr(1,2),16),g=parseInt(c.substr(3,2),16),b=parseInt(c.substr(5,2),16);if(Math.max(r,g,b)<90||Math.max(r,g,b)-Math.min(r,g,b)<40)return 7;
+ let best=7,bd=1e9;[[1,255,0,0],[2,255,255,0],[3,0,255,0],[4,0,255,255],[5,0,0,255],[6,255,0,255]].forEach(a=>{const d=(r-a[1])**2+(g-a[2])**2+(b-a[3])**2;if(d<bd){bd=d;best=a[0];}});return best;}
+// ---------- чтение DXF ----------
+function bulge(vs,cl){const o=[],n=cl?vs.length:vs.length-1;
+ for(let i=0;i<vs.length;i++){const a=vs[i];o.push([a.x,a.y]);
+  if(i<n&&Math.abs(a.b)>1e-9){const b2=vs[(i+1)%vs.length],dx=b2.x-a.x,dy=b2.y-a.y,c=Math.hypot(dx,dy);if(c<1e-12)continue;
+   const f=(1-a.b*a.b)/(2*a.b)*c/2,mx=(a.x+b2.x)/2-dy/c*f,my=(a.y+b2.y)/2+dx/c*f,r=Math.hypot(a.x-mx,a.y-my),a0=Math.atan2(a.y-my,a.x-mx),sw=4*Math.atan(a.b),m=Math.max(2,Math.ceil(Math.abs(sw)/(Math.PI/36)));
+   for(let k=1;k<m;k++){const t=a0+sw*k/m;o.push([mx+r*Math.cos(t),my+r*Math.sin(t)]);}}}
+ return o;}
+function parseDxf(text){
+ const L=text.split(/\r?\n/),P=[];for(let i=0;i+1<L.length;i+=2)P.push([parseInt(L[i],10),L[i+1].trim()]);
+ const sec={};let cur=null;
+ for(let i=0;i<P.length;i++){const c=P[i][0],v=P[i][1];
+  if(c===0&&v==='SECTION'&&P[i+1]){cur=P[i+1][1];sec[cur]=[];i++;continue;}
+  if(c===0&&v==='ENDSEC'){cur=null;continue;}
+  if(cur)sec[cur].push(P[i]);}
+ const grp=pr=>{const o=[];let e=null;for(const p of pr){if(p[0]===0){e={t:p[1],g:[]};o.push(e);}else if(e)e.g.push(p);}return o;};
+ const gv=(e,c,d)=>{const f=e.g.find(p=>p[0]===c);return f?f[1]:d;},gn=(e,c,d)=>{const v=gv(e,c);return v===undefined?d:parseFloat(v);};
+ const H=sec.HEADER||[],k=H.findIndex(p=>p[0]===9&&p[1]==='$INSUNITS'),iu=k>=0?parseInt(H[k+1][1]):0;
+ const UF=({1:25.4,2:304.8,3:1609344,4:1,5:10,6:1000})[iu]||1,warn=[];
+ if(!iu)warn.push('В файле не указаны единицы измерения: считаю миллиметрами.');
+ const layers={};for(const e of grp(sec.TABLES||[]))if(e.t==='LAYER'){const c=gn(e,62,7);layers[gv(e,2,'0')]={c:aci(c),off:c<0,l:gv(e,6,'')};}
+ const blocks={};let cb=null;
+ for(const e of grp(sec.BLOCKS||[])){if(e.t==='BLOCK')cb=blocks[gv(e,2,'')]={bx:gn(e,10,0),by:gn(e,20,0),l:[]};else if(e.t==='ENDBLK')cb=null;else if(cb)cb.l.push(e);}
+ const out=[],skip={};let simp=0;
+ const style=e=>{const ly=layers[gv(e,8,'0')]||{c:'#ffffff',l:''};let c=ly.c;
+  if(gv(e,420)!==undefined)c='#'+(parseInt(gv(e,420))&0xffffff).toString(16).padStart(6,'0');
+  else{const n=gn(e,62,256);if(n!==256&&n>0)c=aci(n);}
+  let lt=gv(e,6,'BYLAYER');if(/BYLAYER/i.test(lt))lt=ly.l||'';return{c,d:dashOf(lt),w:1};};
+ function conv(list,T,depth){
+  const sx=Math.hypot(T[0],T[1]),rot=Math.atan2(T[1],T[0]),Pt=(x,y)=>[T[0]*x+T[2]*y+T[4],T[1]*x+T[3]*y+T[5]];
+  for(let i=0;i<list.length;i++){const e=list[i],t=e.t;
+   if(depth===0&&gn(e,67,0)===1)continue;
+   const ly=layers[gv(e,8,'0')];if(ly&&ly.off)continue;
+   const st=style(e);
+   if(t==='LINE'){const a=Pt(gn(e,10,0),gn(e,20,0)),b=Pt(gn(e,11,0),gn(e,21,0));out.push({t:'line',x1:a[0],y1:a[1],x2:b[0],y2:b[1],...st});}
+   else if(t==='CIRCLE'){const c=Pt(gn(e,10,0),gn(e,20,0));out.push({t:'circle',x:c[0],y:c[1],r:gn(e,40,0)*sx,...st});}
+   else if(t==='ARC'){const c=Pt(gn(e,10,0),gn(e,20,0));out.push({t:'arc',x:c[0],y:c[1],r:gn(e,40,0)*sx,a0:gn(e,50,0)*D2R+rot,a1:gn(e,51,360)*D2R+rot,...st});}
+   else if(t==='LWPOLYLINE'){const vs=[];for(const p of e.g){if(p[0]===10)vs.push({x:parseFloat(p[1]),y:0,b:0});else if(p[0]===20&&vs.length)vs[vs.length-1].y=parseFloat(p[1]);else if(p[0]===42&&vs.length)vs[vs.length-1].b=parseFloat(p[1]);}
+    const cl=gn(e,70,0)&1;if(vs.length>1)out.push({t:'poly',pts:bulge(vs,cl).map(p=>Pt(p[0],p[1])),closed:!!cl,...st});}
+   else if(t==='POLYLINE'){const vs=[];let j=i+1;for(;list[j]&&list[j].t==='VERTEX';j++)vs.push({x:gn(list[j],10,0),y:gn(list[j],20,0),b:gn(list[j],42,0)});
+    i=list[j]&&list[j].t==='SEQEND'?j:j-1;const cl=gn(e,70,0)&1;
+    if(vs.length>1)out.push({t:'poly',pts:bulge(vs,cl).map(p=>Pt(p[0],p[1])),closed:!!cl,...st});}
+   else if(t==='TEXT'||t==='MTEXT'){
+    let s=e.g.filter(p=>p[0]===3).map(p=>p[1]).join('')+gv(e,1,'');
+    s=s.replace(/\\U\+([0-9A-Fa-f]{4})/g,(m,h)=>String.fromCharCode(parseInt(h,16))).replace(/\\P/g,'\n').replace(/\\[A-Za-z][^;\\]*;/g,'').replace(/[{}]/g,'').replace(/%%[cC]/g,'⌀').replace(/%%[dD]/g,'°').replace(/%%[pP]/g,'±');
+    const al=gn(e,72,0)||gn(e,73,0),alt=t==='TEXT'&&al&&gv(e,11)!==undefined,p=Pt(gn(e,alt?11:10,0),gn(e,alt?21:20,0)),h=gn(e,40,2.5)*sx;
+    let r=gn(e,50,0)*D2R+rot;if(t==='MTEXT'&&gv(e,11)!==undefined)r=Math.atan2(gn(e,21,0),gn(e,11,1))+rot;
+    s.split('\n').forEach((ln,q)=>{if(ln.trim())out.push({t:'text',x:p[0]+Math.sin(r)*q*1.4*h,y:p[1]-Math.cos(r)*q*1.4*h,h,text:ln,rot:r,...st});});}
+   else if((t==='INSERT'||t==='DIMENSION')&&depth<8){const b=blocks[gv(e,2,'')];
+    if(b){const q=t==='INSERT'?[gn(e,10,0),gn(e,20,0),gn(e,41,1),gn(e,42,1),gn(e,50,0)*D2R]:[0,0,1,1,0];
+     const Ml=[q[2]*Math.cos(q[4]),q[2]*Math.sin(q[4]),-q[3]*Math.sin(q[4]),q[3]*Math.cos(q[4]),q[0],q[1]];
+     conv(b.l,mul(T,mul(Ml,[1,0,0,1,-b.bx,-b.by])),depth+1);}else skip[t]=(skip[t]||0)+1;}
+   else if(t==='ELLIPSE'){const c=[gn(e,10,0),gn(e,20,0)],mx=gn(e,11,1),my=gn(e,21,0),r=gn(e,40,1),t0=gn(e,41,0);let t1=gn(e,42,TAU);if(t1<=t0)t1+=TAU;
+    const m=Math.max(24,Math.ceil((t1-t0)/(Math.PI/36))),pts=[];
+    for(let q=0;q<=m;q++){const u=t0+(t1-t0)*q/m,cu=Math.cos(u),su=Math.sin(u);pts.push(Pt(c[0]+mx*cu-my*r*su,c[1]+my*cu+mx*r*su));}
+    out.push({t:'poly',pts,closed:false,...st});}
+   else if(t==='SPLINE'){const fit=[],ctl=[];for(const p of e.g){if(p[0]===11)fit.push([parseFloat(p[1]),0]);else if(p[0]===21&&fit.length)fit[fit.length-1][1]=parseFloat(p[1]);else if(p[0]===10)ctl.push([parseFloat(p[1]),0]);else if(p[0]===20&&ctl.length)ctl[ctl.length-1][1]=parseFloat(p[1]);}
+    const pts=(fit.length>1?fit:ctl).map(p=>Pt(p[0],p[1]));if(pts.length>1){out.push({t:'poly',pts,closed:!!(gn(e,70,0)&1),...st});simp++;}}
+   else if(!['VERTEX','SEQEND','VIEWPORT','ATTRIB','ATTDEF','POINT'].includes(t))skip[t]=(skip[t]||0)+1;}}
+ conv(grp(sec.ENTITIES||[]),[UF,0,0,UF,0,0],0);
+ const sk=Object.entries(skip).map(a=>a[0]+' ×'+a[1]).join(', ');
+ if(sk)warn.push('Не перенесено (пока не поддерживается): '+sk+'.');
+ if(simp)warn.push('Сплайны ('+simp+') упрощены до ломаных.');
+ return{ents:out,warn};}
+// ---------- чтение SVG ----------
+function arcPts(x1,y1,rx,ry,phi,fa,fs,x2,y2){
+ phi*=D2R;rx=Math.abs(rx);ry=Math.abs(ry);if(!rx||!ry)return[[x2,y2]];
+ const c=Math.cos(phi),s=Math.sin(phi),dx=(x1-x2)/2,dy=(y1-y2)/2,xp=c*dx+s*dy,yp=-s*dx+c*dy,lam=xp*xp/(rx*rx)+yp*yp/(ry*ry);
+ if(lam>1){const q=Math.sqrt(lam);rx*=q;ry*=q;}
+ const num=rx*rx*ry*ry-rx*rx*yp*yp-ry*ry*xp*xp,den=rx*rx*yp*yp+ry*ry*xp*xp;let co=Math.sqrt(Math.max(0,num/den));if(fa===fs)co=-co;
+ const cxp=co*rx*yp/ry,cyp=-co*ry*xp/rx,cx=c*cxp-s*cyp+(x1+x2)/2,cy=s*cxp+c*cyp+(y1+y2)/2,ang=(ux,uy,vx,vy)=>Math.atan2(ux*vy-uy*vx,ux*vx+uy*vy);
+ const th=ang(1,0,(xp-cxp)/rx,(yp-cyp)/ry);let dth=ang((xp-cxp)/rx,(yp-cyp)/ry,(-xp-cxp)/rx,(-yp-cyp)/ry);
+ if(!fs&&dth>0)dth-=TAU;else if(fs&&dth<0)dth+=TAU;
+ const n=Math.max(4,Math.ceil(Math.abs(dth)/(Math.PI/18))),o=[];
+ for(let k=1;k<=n;k++){const t=th+dth*k/n;o.push([cx+rx*Math.cos(t)*c-ry*Math.sin(t)*s,cy+rx*Math.cos(t)*s+ry*Math.sin(t)*c]);}
+ return o;}
+function pathD(d,mk){
+ const tk=d.match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g)||[];
+ let i=0,cmd='',x=0,y=0,sx=0,sy=0,lx=0,ly=0,pc='',pts=[];
+ const num=()=>parseFloat(tk[i++]),flush=cl=>{if(pts.length>1)mk(pts,cl);pts=[];};
+ const bez=(p0,p1,p2,p3)=>{for(let k=1;k<=12;k++){const t=k/12,u=1-t;pts.push([u*u*u*p0[0]+3*u*u*t*p1[0]+3*u*t*t*p2[0]+t*t*t*p3[0],u*u*u*p0[1]+3*u*u*t*p1[1]+3*u*t*t*p2[1]+t*t*t*p3[1]]);}};
+ while(i<tk.length){
+  if(/[a-zA-Z]/.test(tk[i]))cmd=tk[i++];else if(!cmd){i++;continue;}
+  const rel=cmd===cmd.toLowerCase(),C=cmd.toUpperCase(),ox=rel?x:0,oy=rel?y:0;
+  if(C==='Z'){pts.push([sx,sy]);flush(true);x=sx;y=sy;cmd='';pc='Z';continue;}
+  if(C==='M'){flush(false);x=ox+num();y=oy+num();sx=x;sy=y;pts=[[x,y]];cmd=rel?'l':'L';}
+  else if(C==='L'){x=ox+num();y=oy+num();pts.push([x,y]);}
+  else if(C==='H'){x=ox+num();pts.push([x,y]);}
+  else if(C==='V'){y=oy+num();pts.push([x,y]);}
+  else if(C==='C'){const a=[ox+num(),oy+num()],b=[ox+num(),oy+num()],e=[ox+num(),oy+num()];bez([x,y],a,b,e);lx=b[0];ly=b[1];x=e[0];y=e[1];}
+  else if(C==='S'){const a=/[CS]/.test(pc)?[2*x-lx,2*y-ly]:[x,y],b=[ox+num(),oy+num()],e=[ox+num(),oy+num()];bez([x,y],a,b,e);lx=b[0];ly=b[1];x=e[0];y=e[1];}
+  else if(C==='Q'||C==='T'){const a=C==='Q'?[ox+num(),oy+num()]:(/[QT]/.test(pc)?[2*x-lx,2*y-ly]:[x,y]),e=[ox+num(),oy+num()];
+   bez([x,y],[x+2/3*(a[0]-x),y+2/3*(a[1]-y)],[e[0]+2/3*(a[0]-e[0]),e[1]+2/3*(a[1]-e[1])],e);lx=a[0];ly=a[1];x=e[0];y=e[1];}
+  else if(C==='A'){const rx=num(),ry=num(),ph=num(),fa=num(),fs=num(),e=[ox+num(),oy+num()];arcPts(x,y,rx,ry,ph,fa,fs,e[0],e[1]).forEach(p=>pts.push(p));x=e[0];y=e[1];}
+  else i++;
+  pc=C;}
+ flush(false);}
+function parseTr(s){let M=[1,0,0,1,0,0];const re=/(\w+)\s*\(([^)]*)\)/g;let m;
+ while((m=re.exec(s))){const a=m[2].split(/[\s,]+/).filter(Boolean).map(Number);let X=null;
+  if(m[1]==='translate')X=[1,0,0,1,a[0],a[1]||0];
+  else if(m[1]==='scale')X=[a[0],0,0,a.length>1?a[1]:a[0],0,0];
+  else if(m[1]==='rotate'){const r=a[0]*D2R,c=Math.cos(r),s=Math.sin(r);X=[c,s,-s,c,0,0];if(a.length>2)X=mul(mul([1,0,0,1,a[1],a[2]],X),[1,0,0,1,-a[1],-a[2]]);}
+  else if(m[1]==='matrix')X=a;
+  if(X)M=mul(M,X);}
+ return M;}
+function parseSvg(s){
+ const doc=new DOMParser().parseFromString(s,'image/svg+xml');if(doc.querySelector('parsererror'))throw new Error('Не удалось разобрать SVG-файл');
+ const svg=doc.documentElement,vb=(svg.getAttribute('viewBox')||'').split(/[\s,]+/).map(Number),hv=vb.length===4&&vb[2]>0,wa=svg.getAttribute('width')||'';
+ const um=/^\s*([\d.]+)\s*(mm|cm|in|pt)\s*$/.exec(wa),K=hv&&um?parseFloat(um[1])*{mm:1,cm:10,in:25.4,pt:25.4/72}[um[2]]/vb[2]:25.4/96;
+ const warn=[];if(!um)warn.push('В SVG не указан размер в мм/см/дюймах: 1 единица принята за 1 пиксель (0,2646 мм).');
+ const E=[],sk={},P=(M,p)=>[M[0]*p[0]+M[2]*p[1]+M[4],M[1]*p[0]+M[3]*p[1]+M[5]];
+ function walk(node,T,inh){for(const el of node.children){const n=el.localName;
+  if(['defs','clipPath','mask','style','symbol','metadata','title','desc','script'].includes(n))continue;
+  const M=el.getAttribute('transform')?mul(T,parseTr(el.getAttribute('transform'))):T,st=Object.assign({},inh);
+  for(const k of['stroke','fill','stroke-dasharray','display','font-size']){const v=el.getAttribute(k);if(v!==null)st[k]=v.trim();}
+  const sa=el.getAttribute('style');if(sa)sa.split(';').forEach(q=>{const a=q.split(':');if(a.length>1)st[a[0].trim()]=a[1].trim();});
+  if(st.display==='none')continue;
+  if(n==='g'||n==='svg'||n==='a'){walk(el,M,st);continue;}
+  const c=(st.stroke&&st.stroke!=='none')?(hex(st.stroke)||'#000000'):(st.fill==='none'?null:(hex(st.fill||'#000')||'#000000'));
+  const sd=st['stroke-dasharray'],sty={c:c||'#000000',d:sd&&sd!=='none'?'dashed':'solid',w:1},f=a=>parseFloat(el.getAttribute(a))||0,sc=Math.hypot(M[0],M[1]);
+  if(!c&&n!=='text'){sk[n]=(sk[n]||0)+1;continue;}
+  if(n==='line'){const a=P(M,[f('x1'),f('y1')]),b=P(M,[f('x2'),f('y2')]);E.push({t:'line',x1:a[0],y1:a[1],x2:b[0],y2:b[1],...sty});}
+  else if(n==='rect'){const x=f('x'),y=f('y'),w=f('width'),h=f('height');E.push({t:'poly',pts:[[x,y],[x+w,y],[x+w,y+h],[x,y+h]].map(p=>P(M,p)),closed:true,...sty});}
+  else if(n==='circle'){const q=P(M,[f('cx'),f('cy')]);E.push({t:'circle',x:q[0],y:q[1],r:f('r')*sc,...sty});}
+  else if(n==='ellipse'){const pts=[];for(let k=0;k<48;k++){const t=k/48*TAU;pts.push(P(M,[f('cx')+f('rx')*Math.cos(t),f('cy')+f('ry')*Math.sin(t)]));}E.push({t:'poly',pts,closed:true,...sty});}
+  else if(n==='polyline'||n==='polygon'){const v=(el.getAttribute('points')||'').trim().split(/[\s,]+/).map(Number),pts=[];for(let k=0;k+1<v.length;k+=2)pts.push(P(M,[v[k],v[k+1]]));if(pts.length>1)E.push({t:'poly',pts,closed:n==='polygon',...sty});}
+  else if(n==='path')pathD(el.getAttribute('d')||'',(pts,cl)=>E.push({t:'poly',pts:pts.map(p=>P(M,p)),closed:cl,...sty}));
+  else if(n==='text'){const q=P(M,[f('x'),f('y')]),fs=parseFloat(st['font-size'])||16,tx=el.textContent.trim();if(tx)E.push({t:'text',x:q[0],y:q[1],h:fs*sc,text:tx,rot:Math.atan2(M[1],M[0]),...sty});}
+  else sk[n]=(sk[n]||0)+1;}}
+ walk(svg,[K,0,0,-K,-(hv?vb[0]:0)*K,(hv?vb[1]:0)*K],{});
+ const s2=Object.entries(sk).map(a=>a[0]+' ×'+a[1]).join(', ');if(s2)warn.push('Не перенесено (пока не поддерживается): '+s2+'.');
+ warn.push('Заливки не переносятся: фигуры передаются контурами.');
+ return{ents:E,warn};}
+// ---------- чтение JSON эскизника ----------
+function parseJson(s){
+ const d=JSON.parse(s);if(!d||!Array.isArray(d.objects))throw new Error('Это не файл эскизника: в нём нет списка объектов');
+ const E=[];
+ for(const o of d.objects){if(o.isEraser)continue;const st={c:o.color||'#ffffff',d:o.lineType||'solid',w:o.lineWidth||2};
+  if(o.type==='line')E.push({t:'line',x1:o.x,y1:o.y,x2:o.x2,y2:o.y2,...st});
+  else if(o.type==='rect')E.push({t:'poly',pts:[[o.x,o.y],[o.x+o.w,o.y],[o.x+o.w,o.y+o.h],[o.x,o.y+o.h]],closed:true,...st});
+  else if(o.type==='circle')E.push({t:'circle',x:o.x,y:o.y,r:o.r,...st});
+  else if(o.type==='dim'){const dx=o.x2-o.x,dy=o.y2-o.y,L=Math.hypot(dx,dy)||1,f=o.off||0,ox=-dy/L*f,oy=dx/L*f;
+   E.push({t:'line',x1:o.x+ox,y1:o.y+oy,x2:o.x2+ox,y2:o.y2+oy,...st,w:1},{t:'text',x:(o.x+o.x2)/2+ox,y:(o.y+o.y2)/2+oy+8,h:14,text:L.toFixed(1)+' мм',rot:0,c:st.c,d:'solid',w:1});}
+  else if(o.type==='text'){const h=o.font||12,tx=o.text||'';E.push({t:'text',x:o.x-.3*h*tx.length,y:o.y-h*.35,h,text:tx,rot:0,...st});}}
+ const warn=['Подписи размеров, созданные автоматически в эскизнике, не переносятся (только нарисованные размерные линии).'];
+ if(d.frame&&d.frame!=='none')warn.push('Рамка и штамп эскизника не переносятся.');
+ return{ents:E,warn};}
+// ---------- геометрия, отрисовка ----------
+function bounds(E){let x0=1e300,y0=1e300,x1=-1e300,y1=-1e300;const a=(x,y)=>{if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;};
+ for(const e of E){if(e.t==='line'){a(e.x1,e.y1);a(e.x2,e.y2);}else if(e.t==='circle'||e.t==='arc'){a(e.x-e.r,e.y-e.r);a(e.x+e.r,e.y+e.r);}else if(e.t==='poly')e.pts.forEach(p=>a(p[0],p[1]));else if(e.t==='text'){a(e.x,e.y);a(e.x+e.h*.6*e.text.length,e.y+e.h);}}
+ if(x0>x1)return null;const p=Math.max(x1-x0,y1-y0,1)*.03;return{x0:x0-p,y0:y0-p,x1:x1+p,y1:y1+p};}
+const pcol=(e,mono)=>mono||!e.c||e.c==='#ffffff'?'#000000':e.c;
+function render(cv,E,side,mono){
+ const B=bounds(E),w=B.x1-B.x0,h=B.y1-B.y0,z=side/Math.max(w,h);cv.width=Math.max(1,Math.round(w*z));cv.height=Math.max(1,Math.round(h*z));
+ const g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,cv.width,cv.height);g.lineCap='round';g.lineJoin='round';
+ const X=x=>(x-B.x0)*z,Y=y=>(B.y1-y)*z,k=side/1500;
+ for(const e of E){g.strokeStyle=g.fillStyle=pcol(e,mono);g.lineWidth=Math.max(1,(e.w||1)*k*1.2);g.setLineDash((DASH[e.d]||[]).map(v=>v*g.lineWidth));g.beginPath();
+  if(e.t==='line'){g.moveTo(X(e.x1),Y(e.y1));g.lineTo(X(e.x2),Y(e.y2));g.stroke();}
+  else if(e.t==='circle'){g.arc(X(e.x),Y(e.y),e.r*z,0,7);g.stroke();}
+  else if(e.t==='arc'){g.arc(X(e.x),Y(e.y),e.r*z,-e.a0,-e.a1,true);g.stroke();}
+  else if(e.t==='poly'){e.pts.forEach((q,i)=>i?g.lineTo(X(q[0]),Y(q[1])):g.moveTo(X(q[0]),Y(q[1])));if(e.closed)g.closePath();g.stroke();}
+  else if(e.t==='text'){g.save();g.translate(X(e.x),Y(e.y));g.rotate(-(e.rot||0));g.font=Math.max(6,e.h*z)+'px Arial, sans-serif';g.fillText(e.text,0,0);g.restore();}}}
+// ---------- запись ----------
+const esc=t=>String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function toSvg(E,mono){
+ const B=bounds(E),W=B.x1-B.x0,H=B.y1-B.y0,S=Math.max(W,H)/1500*.8,fx=x=>(x-B.x0).toFixed(3),fy=y=>(B.y1-y).toFixed(3);
+ const st=e=>`stroke="${pcol(e,mono)}" stroke-width="${((e.w||1)*S).toFixed(3)}" fill="none"`+(DASH[e.d]?` stroke-dasharray="${DASH[e.d].map(v=>(v*S).toFixed(2)).join(' ')}"`:'');
+ const o=[`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W.toFixed(3)} ${H.toFixed(3)}" width="${W.toFixed(2)}mm" height="${H.toFixed(2)}mm">`];
+ for(const e of E){
+  if(e.t==='line')o.push(`<line x1="${fx(e.x1)}" y1="${fy(e.y1)}" x2="${fx(e.x2)}" y2="${fy(e.y2)}" ${st(e)}/>`);
+  else if(e.t==='circle')o.push(`<circle cx="${fx(e.x)}" cy="${fy(e.y)}" r="${e.r.toFixed(3)}" ${st(e)}/>`);
+  else if(e.t==='arc'){let d=((e.a1-e.a0)%TAU+TAU)%TAU;
+   if(d<1e-9||d>TAU-1e-6)o.push(`<circle cx="${fx(e.x)}" cy="${fy(e.y)}" r="${e.r.toFixed(3)}" ${st(e)}/>`);
+   else o.push(`<path d="M${fx(e.x+e.r*Math.cos(e.a0))} ${fy(e.y+e.r*Math.sin(e.a0))}A${e.r.toFixed(3)} ${e.r.toFixed(3)} 0 ${d>Math.PI?1:0} 0 ${fx(e.x+e.r*Math.cos(e.a1))} ${fy(e.y+e.r*Math.sin(e.a1))}" ${st(e)}/>`);}
+  else if(e.t==='poly')o.push(`<${e.closed?'polygon':'polyline'} points="${e.pts.map(p=>fx(p[0])+','+fy(p[1])).join(' ')}" ${st(e)}/>`);
+  else if(e.t==='text')o.push(`<text transform="translate(${fx(e.x)} ${fy(e.y)}) rotate(${(-(e.rot||0)/D2R).toFixed(2)})" font-size="${e.h.toFixed(3)}" font-family="Arial,sans-serif" fill="${pcol(e,mono)}">${esc(e.text)}</text>`);}
+ o.push('</svg>');return o.join('\n');}
+function cp1251(s){const b=[];for(const ch of s.replace(/⌀/g,'%%c').replace(/°/g,'%%d').replace(/±/g,'%%p')){const c=ch.charCodeAt(0);b.push(c<128?c:c>=0x410&&c<=0x44f?c-0x350:c===0x401?0xa8:c===0x451?0xb8:63);}return b;}
+function toDxf(E){
+ const o=[],w=(c,v)=>o.push(c+'\r\n'+v+'\r\n'),n=v=>(+v).toFixed(4);
+ w(0,'SECTION');w(2,'HEADER');w(9,'$ACADVER');w(1,'AC1009');w(9,'$DWGCODEPAGE');w(3,'ANSI_1251');w(0,'ENDSEC');w(0,'SECTION');w(2,'ENTITIES');
+ for(const e of E){const b=()=>{w(8,'0');w(62,nearAci(e.c||'#ffffff'));};
+  if(e.t==='line'){w(0,'LINE');b();w(10,n(e.x1));w(20,n(e.y1));w(30,0);w(11,n(e.x2));w(21,n(e.y2));w(31,0);}
+  else if(e.t==='circle'){w(0,'CIRCLE');b();w(10,n(e.x));w(20,n(e.y));w(30,0);w(40,n(e.r));}
+  else if(e.t==='arc'){w(0,'ARC');b();w(10,n(e.x));w(20,n(e.y));w(30,0);w(40,n(e.r));w(50,n(((e.a0/D2R)%360+360)%360));w(51,n(((e.a1/D2R)%360+360)%360));}
+  else if(e.t==='poly'){w(0,'POLYLINE');b();w(66,1);w(70,e.closed?1:0);for(const p of e.pts){w(0,'VERTEX');w(8,'0');w(10,n(p[0]));w(20,n(p[1]));w(30,0);}w(0,'SEQEND');w(8,'0');}
+  else if(e.t==='text'){w(0,'TEXT');b();w(10,n(e.x));w(20,n(e.y));w(30,0);w(40,n(e.h));w(1,e.text);w(50,n(((e.rot||0)/D2R)%360));}}
+ w(0,'ENDSEC');w(0,'EOF');return new Uint8Array(cp1251(o.join('')));}
+function toJson(E){
+ const B=bounds(E),cx=(B.x0+B.x1)/2,cy=(B.y0+B.y1)/2,O=[],col=c=>!c||c==='#000000'?'#ffffff':c,lw=e=>Math.max(1,Math.min(6,Math.round(e.w||1)));
+ const seg=(a,b,e)=>O.push({type:'line',x:a[0]-cx,y:a[1]-cy,x2:b[0]-cx,y2:b[1]-cy,color:col(e.c),lineWidth:lw(e),lineType:e.d||'solid',showLength:false});
+ for(const e of E){
+  if(e.t==='line')seg([e.x1,e.y1],[e.x2,e.y2],e);
+  else if(e.t==='circle')O.push({type:'circle',x:e.x-cx,y:e.y-cy,r:e.r,showCirc:false,color:col(e.c),lineWidth:lw(e),lineType:e.d||'solid'});
+  else if(e.t==='arc'){const d=((e.a1-e.a0)%TAU+TAU)%TAU||TAU,m=Math.max(2,Math.ceil(d/(Math.PI/36)));let p=null;
+   for(let k=0;k<=m;k++){const t=e.a0+d*k/m,q=[e.x+e.r*Math.cos(t),e.y+e.r*Math.sin(t)];if(p)seg(p,q,e);p=q;}}
+  else if(e.t==='poly'){const q=e.pts.length;for(let i=0;i<q-1;i++)seg(e.pts[i],e.pts[i+1],e);if(e.closed&&q>2)seg(e.pts[q-1],e.pts[0],e);}
+  else if(e.t==='text')O.push({type:'text',x:e.x-cx+.3*e.h*e.text.length,y:e.y-cy+e.h*.35,text:e.text,font:Math.max(8,Math.round(e.h)),color:col(e.c),lineWidth:2,lineType:'solid'});}
+ const W=B.x1-B.x0,H=B.y1-B.y0;
+ return JSON.stringify({theme:'dark',frame:'none',frameScale:'auto',stamp:{},objects:O,fieldW:Math.max(12000,Math.ceil(W*1.5/1000)*1000),fieldH:Math.max(9000,Math.ceil(H*1.5/1000)*1000),gridSize:10,color:'#ffffff',lineWidth:2,fontSizeDim:18},null,2);}
+function toPdf(cv,page){
+ const mm=2.83465;let pw=(page==='A3'?297:210)*mm,ph=(page==='A3'?420:297)*mm;if(cv.width>=cv.height)[pw,ph]=[ph,pw];
+ const m=10*mm,s=Math.min((pw-2*m)/cv.width,(ph-2*m)/cv.height),w=cv.width*s,h=cv.height*s,x=(pw-w)/2,y=(ph-h)/2;
+ const jpg=Uint8Array.from(atob(cv.toDataURL('image/jpeg',.95).split(',')[1]),c=>c.charCodeAt(0));
+ const enc=new TextEncoder(),parts=[],offs=[];let len=0;
+ const push=d=>{const b=typeof d==='string'?enc.encode(d):d;parts.push(b);len+=b.length;},obj=(i,d)=>{offs[i]=len;push(`${i} 0 obj\n${d}\nendobj\n`);};
+ push('%PDF-1.4\n');obj(1,'<< /Type /Catalog /Pages 2 0 R >>');obj(2,'<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+ obj(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw.toFixed(2)} ${ph.toFixed(2)}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`);
+ offs[4]=len;push(`4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${cv.width} /Height ${cv.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpg.length} >>\nstream\n`);push(jpg);push('\nendstream\nendobj\n');
+ const cs=`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${y.toFixed(2)} cm /Im0 Do Q`;obj(5,`<< /Length ${cs.length} >>\nstream\n${cs}\nendstream`);
+ const xr=len;let t='xref\n0 6\n0000000000 65535 f \n';for(let i=1;i<=5;i++)t+=String(offs[i]).padStart(10,'0')+' 00000 n \n';
+ push(t+`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xr}\n%%EOF`);return new Blob(parts,{type:'application/pdf'});}
+// ---------- интерфейс ----------
+const OUTW={JSON:['Дуги, ломаные и сплайны превращены в короткие отрезки (в эскизнике нет таких объектов).','Линии, окружности и текст перенесены; заливки, штриховки и блоки не сохраняются как объекты.'],
+ DXF:['Толщина линий не сохраняется; цвета приведены к 7 основным цветам AutoCAD.','Типы линий (штриховые и др.) в DXF записываются сплошными.'],
+ PDF:['PDF сделан картинкой (не вектор): для точной печати берите «Высокое» качество или SVG.'],SVG:[],PNG:[]};
+function say(t,cls){$('res').innerHTML=t?`<div class="${cls}">${t}</div>`:'';}
+function avail(){return SRC.kind==='raster'?['PNG','PDF']:SRC.kind==='pdf'?[]:FM;}
+function dec(buf){try{return new TextDecoder('utf-8',{fatal:true}).decode(buf).replace(/^\uFEFF/,'');}catch(e){return new TextDecoder('windows-1251').decode(buf);}}
+function msg(t,cls){$('msg').innerHTML=t?`<div class="${cls||'e'}">${t}</div>`:'';}
+async function loadBuf(buf,name){
+ msg('');say('');ENTS=null;SRC=null;$('c2').hidden=true;
+ try{
+  const u=new Uint8Array(buf.slice(0,8));
+  if(u[0]===0x89&&u[1]===0x50||u[0]===0xff&&u[1]===0xd8){
+   const img=new Image();img.src=URL.createObjectURL(new Blob([buf]));await img.decode();SRC={kind:'raster',name,img};
+  }else if(String.fromCharCode(...u.slice(0,4))==='%PDF'){SRC={kind:'pdf',name};}
+  else{const s=dec(buf),t=s.trimStart();let r;
+   if(t[0]==='{'||t[0]==='['){SRC={kind:'json',name};r=parseJson(s);}
+   else if(/<svg[\s>]/i.test(s)){SRC={kind:'svg',name};r=parseSvg(s);}
+   else if(/^\s*0\s*\r?\n\s*SECTION/.test(s)||/\r?\n\s*ENTITIES\s*\r?\n/.test(s)){SRC={kind:'dxf',name};r=parseDxf(s);}
+   else throw new Error('Не удалось определить формат файла. Поддерживаются DXF, SVG, JSON эскизника, PNG/JPG и (позже) PDF.');
+   if(!r.ents.length)throw new Error('В файле не найдено объектов, которые можно перенести.');
+   ENTS=r.ents;SRC.warn=r.warn;}
+  show();
+ }catch(e){msg('⚠️ '+e.message);}}
+function show(){
+ $('c2').hidden=false;const pv=$('pv'),k=SRC.kind,av=avail();let info=`<b>${esc(SRC.name)}</b> — распознан формат: ${KN[k]}`;
+ $('warns').innerHTML='';
+ if(k==='raster'){info+=`<br>Размер: ${SRC.img.naturalWidth}×${SRC.img.naturalHeight} px`;const z=Math.min(1,520/SRC.img.naturalWidth);pv.width=SRC.img.naturalWidth*z;pv.height=SRC.img.naturalHeight*z;pv.getContext('2d').drawImage(SRC.img,0,0,pv.width,pv.height);
+  $('warns').innerHTML='<div class="w">Из картинки в DXF/SVG/JSON пока нельзя: превращение картинки в линии (трассировка) будет на следующем этапе.</div>';}
+ else if(k==='pdf'){pv.width=pv.height=1;$('warns').innerHTML='<div class="w">PDF на входе пока не поддерживается: это следующий этап.</div>';}
+ else{const B=bounds(ENTS);info+=`<br>Объектов: ${ENTS.length}; размер: ${(B.x1-B.x0).toFixed(0)} × ${(B.y1-B.y0).toFixed(0)} мм`;render(pv,ENTS,520,true);$('warns').innerHTML=SRC.warn.map(w=>`<div class="w">⚠️ ${esc(w)}</div>`).join('');}
+ $('info').innerHTML=info;pv.style.display=k==='pdf'?'none':'';
+ const first=av.find(f=>f.toLowerCase()!==(k==='json'?'json':k));
+ $('fmts').innerHTML=FM.map(f=>`<label class="${av.includes(f)?'':'dis'}"><input type="radio" name="f" value="${f}" ${av.includes(f)?'':'disabled'} ${f===first?'checked':''}>${f}</label>`).join('');
+ $('go').disabled=!av.length;}
+$('go').onclick=()=>{
+ try{const f=document.querySelector('input[name=f]:checked').value,q=+$('q').value,mono=$('mono').value==='1',base=SRC.name.replace(/\.[^.]+$/,'');
+  const dl=(blob,ext)=>{const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=base+'.'+ext;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000);};
+  let cv=null;
+  if(f==='PNG'||f==='PDF'){cv=document.createElement('canvas');
+   if(SRC.kind==='raster'){const im=SRC.img,z=Math.min(1,q/Math.max(im.naturalWidth,im.naturalHeight));cv.width=Math.round(im.naturalWidth*z);cv.height=Math.round(im.naturalHeight*z);const g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,cv.width,cv.height);g.drawImage(im,0,0,cv.width,cv.height);}
+   else render(cv,ENTS,q,mono);}
+  if(f==='PNG')cv.toBlob(b=>dl(b,'png'));
+  else if(f==='PDF')dl(toPdf(cv,$('pg').value),'pdf');
+  else if(f==='SVG')dl(new Blob([toSvg(ENTS,mono)],{type:'image/svg+xml'}),'svg');
+  else if(f==='DXF')dl(new Blob([toDxf(ENTS)],{type:'application/dxf'}),'dxf');
+  else dl(new Blob([toJson(ENTS)],{type:'application/json'}),'json');
+  say('✅ Готово: файл '+f+' сохранён.'+(OUTW[f].length?'<div class="w">'+OUTW[f].map(w=>'⚠️ '+esc(w)).join('<br>')+'</div>':''),'ok');
+ }catch(e){say('⚠️ Ошибка: '+esc(e.message),'e');}};
+const drop=$('drop'),fi=$('fi');
+drop.onclick=()=>fi.click();fi.onchange=()=>{if(fi.files[0])fi.files[0].arrayBuffer().then(b=>loadBuf(b,fi.files[0].name));fi.value='';};
+['dragenter','dragover'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>document.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+document.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)f.arrayBuffer().then(b=>loadBuf(b,f.name));});
+document.addEventListener('paste',e=>{const cd=e.clipboardData;if(cd.files&&cd.files[0]){const f=cd.files[0];f.arrayBuffer().then(b=>loadBuf(b,f.name||'буфер'));}
+ else{const t=cd.getData('text');if(t)loadBuf(new TextEncoder().encode(t).buffer,'вставленный текст');}});
+</script></body></html>
